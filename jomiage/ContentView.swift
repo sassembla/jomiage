@@ -12,20 +12,36 @@ import Vision
 import ScreenCaptureKit
 
 class ScreenRecorder: NSObject, SCStreamOutput {
+    // スクリーンショット機構
     private var stream: SCStream?
     private let captureRect: CGRect
     private let scaleFactor: CGFloat
 
+    // 重複排除記録保持用
+    #warning("無限に伸びていくのでいつか不味い")
     private var texts: [String] = .init()
 
+    // 直前の文字列との比較用
+    private var beforeComment: String = ""
+
+    // 発声機構
+    private let synthesizer = AVSpeechSynthesizer()
+
+    // 録音機構
+    #warning("まだunused")
+    private let audioEngine = AVAudioEngine()
+    private var audioFile: AVAudioFile?
+    private var isRecording = false
+    private let path = FileManager.default.temporaryDirectory
+    private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("recorded_audio.wav")
+
+    // 初期化
     init(captureRect: CGRect, scaleFactor: CGFloat = 1.0) {
         self.captureRect = captureRect
         self.scaleFactor = scaleFactor
     }
 
     func startCapture() async {
-//        startRecording()
-
         do {
             // スクリーンの取得（デフォルトのメインディスプレイ）
             guard let display = try await SCShareableContent.current.displays.first else {
@@ -57,7 +73,7 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         print("Screen capture stopped")
     }
 
-    // SCStreamOutput プロトコルの実装（画像データを取得）
+    // スクリーンショットで流れてきた画像を文字起こしし、発声処理に放り込む。
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, let imageBuffer = sampleBuffer.imageBuffer else {
             return
@@ -68,7 +84,8 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         // captureRectでスクリーンショットをクロップする
         let cropped = ciImage.cropped(to: captureRect)
 
-        // 画像の白黒を反転
+        // 識字のために画像の白黒を反転
+        // TODO: オプションにしたほうがいいかもしれない
         let invertedImage = cropped.applyingFilter("CIColorInvert")
 
         // OCR処理を実行
@@ -78,8 +95,8 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         }
     }
 
-    var beforeComment: String = ""
-
+    // 文字起こし→発声を行う。
+    // 事前に発声済み、通過済み、文字起こしの揺れについて対処を行い、
     func recognizeText(from image: CGImage) {
         let request = VNRecognizeTextRequest { request, _ in
             guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
@@ -88,6 +105,8 @@ class ScreenRecorder: NSObject, SCStreamOutput {
 //                    print("Recognized Text: \(topCandidate.string)")
 
                     let comment = topCandidate.string
+
+                    // 重複排除などを行う
 
                     // 信頼度が低すぎる場合無視する
                     if topCandidate.confidence < 0.5 {
@@ -120,19 +139,26 @@ class ScreenRecorder: NSObject, SCStreamOutput {
                         }
                     }
 
+                    // 重複割合による重複排除
                     if self.hasCommonCharacters(over: 60, str1: self.beforeComment, str2: comment) {
-                        print("重複排除")
                         continue
                     }
 
+                    // 鳴らすのが確定
+
+                    // 直前のコメントを記録
                     self.beforeComment = comment
 
+                    // 文字を全てアルファベットに変換し、読みを調整する
+                    #warning("ログ以外に利用していない。")
                     let hiraganaComment = self.convertToHiragana(comment)
-                    self.texts.append(hiraganaComment)
+
+                    // 読み上げ確定なので、読み上げた記録に追加する。
+                    self.texts.append(comment)
 
                     // 発声する
                     print("comment", comment, "hiraganaComment", hiraganaComment, "confidence", topCandidate.confidence)
-                    self.synthesizeSpeech(from: topCandidate.string)
+                    self.speechComment(from: comment)
                 }
             }
         }
@@ -142,6 +168,7 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         try? handler.perform([request])
     }
 
+    // 前後のコメントを重複率で比較し、特定の割合以上に一致していればtrueを返す。
     func hasCommonCharacters(over threshold: Double, str1: String, str2: String) -> Bool {
         let set1 = Set(str1)
         let set2 = Set(str2)
@@ -150,10 +177,13 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         let totalCount = max(set1.count, set2.count) // 大きい方の文字数を基準に割合計算
 
         let commonRatio = Double(commonCount) / Double(totalCount)
-        print("commonRatio", commonRatio)
+
+        // print("commonRatio", commonRatio)
         return commonRatio >= threshold / 100.0
     }
 
+    // 文字列をアルファベットにする
+    #warning("unusedなアルファベット化。読みを改善するために使いたい。")
     func convertToHiragana(_ text: String) -> String {
         let locale = CFLocaleCreate(kCFAllocatorDefault, CFLocaleIdentifier("ja_JP" as CFString))
         let tokenizer = CFStringTokenizerCreate(kCFAllocatorDefault, text as CFString, CFRangeMake(0, text.utf16.count), kCFStringTokenizerUnitWord, locale)
@@ -171,13 +201,8 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         return result
     }
 
-    func isSimilarText(_ text1: String, _ text2: String) -> Bool {
-        let minLength = min(text1.count, text2.count)
-        let commonPrefix = text1.commonPrefix(with: text2)
-
-        return commonPrefix.count >= minLength - 1 // 1文字の違いまで許容
-    }
-
+    // 録音を開始する
+    #warning("unused")
     func startRecording() {
         do {
             let audioInput = audioEngine.inputNode
@@ -201,41 +226,34 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         }
     }
 
-    /// 🛑 録音を停止 & MP3変換
+    // 録音を停止
+    #warning("unused")
     func stopRecording() {
-//        audioEngine.stop()
-//        audioEngine.inputNode.removeTap(onBus: 0)
-//        isRecording = false
-//        print("Recording stopped")
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        isRecording = false
+        print("Recording stopped")
     }
 
-    let synthesizer = AVSpeechSynthesizer()
-
-    // 🔹 録音用
-    private let audioEngine = AVAudioEngine()
-    private var audioFile: AVAudioFile?
-    private var isRecording = false
-    private let path = FileManager.default.temporaryDirectory
-    private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("recorded_audio.wav")
-
-    func synthesizeSpeech(from text: String) {
-//        print("text", text)
+    // 日本語で発声する
+    func speechComment(from text: String) {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "ja-JP")
 
         let voice = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "ja-JP" }
         for (i, v) in voice.enumerated() {
+            #warning("適当に選んだ声")
             if i == 7 {
                 utterance.voice = v
-                // 音を鳴らす
             }
         }
 
-        // ここで、音を鳴らし、録音する。
+        // ここで、音を鳴らす。
         synthesizer.speak(utterance)
     }
 }
 
+// メインUI
 struct ContentView: View {
     var body: some View {
         VStack {
@@ -254,6 +272,7 @@ struct ContentView: View {
 
     // 画面の特定の範囲をキャプチャ開始
     func startCapture() {
+        #warning("キャプチャ範囲は脅威の直値固定で、ディスプレイの左下 1000 x 200 px")
         let rect = CGRect(x: 0, y: 0, width: 1000, height: 200)
 
         screenRecorder = ScreenRecorder(captureRect: rect)
@@ -264,7 +283,7 @@ struct ContentView: View {
     }
 
     func stopCapture() {
-        screenRecorder.stopRecording()
+        //
     }
 }
 
