@@ -105,15 +105,23 @@ class ScreenRecorder: NSObject, SCStreamOutput {
                     }
 
                     // 短すぎると読まない
-                    if comment.count < 3 {
+                    if comment.count < 2 {
                         continue
                     }
 
-                    if comment.contains(self.beforeComment) {
-                        continue
+                    // 相互包含
+                    if true {
+                        if comment.contains(self.beforeComment) {
+                            continue
+                        }
+
+                        if self.beforeComment.contains(comment) {
+                            continue
+                        }
                     }
 
-                    if self.beforeComment.contains(comment) {
+                    if self.hasCommonCharacters(over: 60, str1: self.beforeComment, str2: comment) {
+                        print("重複排除")
                         continue
                     }
 
@@ -132,6 +140,18 @@ class ScreenRecorder: NSObject, SCStreamOutput {
 
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         try? handler.perform([request])
+    }
+
+    func hasCommonCharacters(over threshold: Double, str1: String, str2: String) -> Bool {
+        let set1 = Set(str1)
+        let set2 = Set(str2)
+
+        let commonCount = set1.intersection(set2).count
+        let totalCount = max(set1.count, set2.count) // 大きい方の文字数を基準に割合計算
+
+        let commonRatio = Double(commonCount) / Double(totalCount)
+        print("commonRatio", commonRatio)
+        return commonRatio >= threshold / 100.0
     }
 
     func convertToHiragana(_ text: String) -> String {
