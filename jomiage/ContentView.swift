@@ -12,6 +12,8 @@ import Vision
 import ScreenCaptureKit
 
 class ScreenRecorder: NSObject, SCStreamOutput {
+    private(set) var sampleImage: CGImage?
+
     // スクリーンショット機構
     private var stream: SCStream?
     private let captureRect: CGRect
@@ -67,6 +69,11 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         }
     }
 
+    func skipQueuedComment() {
+        synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    #warning("unused まだ使われてない")
     func stopCapture() {
         stream?.stopCapture()
         stream = nil
@@ -91,6 +98,7 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         // OCR処理を実行
         let context = CIContext()
         if let cgImage = context.createCGImage(invertedImage, from: invertedImage.extent) {
+            sampleImage = cgImage
             recognizeText(from: cgImage)
         }
     }
@@ -249,6 +257,7 @@ class ScreenRecorder: NSObject, SCStreamOutput {
         }
 
         // ここで、音を鳴らす。
+        // この処理は自動的に発生すべき音声をキューイングし、たまった音声を順に発声する。
         synthesizer.speak(utterance)
     }
 }
@@ -259,31 +268,68 @@ struct ContentView: View {
         VStack {
             Button("start") {
                 startCapture()
-            }
+            }.disabled(screenRecorder != nil)
 
-            Button("stop") {
-                stopCapture()
+            Button("skip") {
+                skipCaptured()
+            }.disabled(screenRecorder == nil)
+
+            Button("Read Sample") {
+                readSample()
+            }.disabled(screenRecorder == nil)
+
+            if let sample = sampleImage {
+                Image(decorative: sample, scale: 1.0, orientation: .up)
+                    .resizable()
+                    .frame(width: 1000, height: 200) // 表示サイズを指定
+                    .border(Color.gray, width: 1)
+            } else {
+                Text("No image available")
+                    .foregroundColor(.gray)
             }
         }
         .padding()
     }
 
-    @State private var screenRecorder: ScreenRecorder!
+    // スクリーンショット→識字→発声を行うユニット
+    @State private var screenRecorder: ScreenRecorder?
+
+    // 画像
+    @State private var sampleImage: CGImage?
 
     // 画面の特定の範囲をキャプチャ開始
     func startCapture() {
         #warning("キャプチャ範囲は脅威の直値固定で、ディスプレイの左下 1000 x 200 px")
         let rect = CGRect(x: 0, y: 0, width: 1000, height: 200)
 
-        screenRecorder = ScreenRecorder(captureRect: rect)
+        let _screenRecorder = ScreenRecorder(captureRect: rect)
+
+        screenRecorder = _screenRecorder
 
         Task {
-            await screenRecorder.startCapture()
+            await _screenRecorder.startCapture()
         }
     }
 
-    func stopCapture() {
-        //
+    func skipCaptured() {
+        guard let screenRecorder = screenRecorder else {
+            fatalError("nilになっている")
+        }
+
+        // キューしている要素をスキップする
+        screenRecorder.skipQueuedComment()
+    }
+
+    func readSample() {
+        guard let screenRecorder = screenRecorder else {
+            fatalError("nilになっている")
+        }
+
+        guard let sample = screenRecorder.sampleImage else {
+            return
+        }
+
+        sampleImage = sample // 取得した CGImage を SwiftUI の State に格納
     }
 }
 
